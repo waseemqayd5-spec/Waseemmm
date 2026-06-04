@@ -1,6 +1,9 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 """
 🚀 ViralShield AI Engine - منظومة التسويق الذكي والفيروسي المتكاملة
-ملف واحد كامل للتشغيل المباشر على Render
+ملف واحد كامل للتشغيل المباشر على Render مع دعم Python 3.12
 """
 
 import os
@@ -18,17 +21,17 @@ from sqlalchemy.orm import relationship
 from dotenv import load_dotenv
 import numpy as np
 
-# تحميل متغيرات البيئة
+# تحميل متغيرات البيئة (للمفاتيح الحساسة)
 load_dotenv()
 
 # ==================== إعداد التطبيق ====================
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/api/*": {"origins": "*"}})  # تسهيل الاتصال من أي frontend
 
 # إعدادات الأمان
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', secrets.token_hex(32))
 
-# إعداد قاعدة البيانات
+# إعداد قاعدة البيانات (PostgreSQL على Render أو SQLite محلياً)
 DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:///viralshield.db')
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
@@ -529,7 +532,7 @@ def index():
     """الصفحة الرئيسية - معلومات النظام"""
     return jsonify({
         'system': 'ViralShield AI Engine',
-        'version': '2.0.0',
+        'version': '3.0.0',
         'status': '🚀 Operational',
         'features': [
             'Cookie-less AI Tracking',
