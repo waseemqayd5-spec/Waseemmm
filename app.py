@@ -8,7 +8,9 @@
 - نظام الروابط القصيرة والتتبع المتقدم (رقم 2)
 - متجر منتجات وفرق تسويقية (رقم 5)
 - واجهة جذابة بألوان ذهبي، أسود، أبيض، أصفر
-- إصلاح مشكلة الضغط على كود المروج (إزالة الرابط التشعبي)
+- ✅ **تم إصلاح مشكلة الضغط على كود المروج (إزالة الرابط التشعبي نهائياً)**
+- ✅ **تم إصلاح مسار الروابط القصيرة /r/<code>**
+- ✅ **إضافة صفحة عرض المنتج**
 - إضافة تذييل الصفحة: "إعداد وتصميم م/ وسيم الحميدي"
 """
 
@@ -19,7 +21,7 @@ import string
 from datetime import datetime, timedelta
 from functools import wraps
 
-from flask import Flask, request, jsonify, render_template_string, redirect, url_for
+from flask import Flask, request, jsonify, render_template_string, redirect, url_for, abort
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Text, ForeignKey
@@ -54,7 +56,7 @@ else:
 
 db = SQLAlchemy(app)
 
-# ==================== نماذج قاعدة البيانات (المضافة والمعدلة) ====================
+# ==================== نماذج قاعدة البيانات ====================
 
 class Promoter(db.Model):
     __tablename__ = 'promoters'
@@ -71,18 +73,15 @@ class Promoter(db.Model):
     activity_score = Column(Float, default=100.0)
     is_at_risk_of_churn = Column(Boolean, default=False)
     churn_probability = Column(Float, default=0.0)
-    # حقول جديدة للمستويات والنقاط
     level = Column(String(20), default="برونز")
     points = Column(Integer, default=0)
-    # دور التاجر
     is_merchant = Column(Boolean, default=False)
-    # العلاقات
     fingerprints = relationship('DeviceFingerprint', backref='promoter', lazy=True)
     challenges = relationship('ViralGroupChallenge', backref='promoter', lazy=True)
-    products = relationship('Product', backref='merchant', lazy=True)        # المنتجات التي أضافها كتاجر
-    short_links = relationship('ShortLink', backref='promoter', lazy=True)   # الروابط القصيرة التي أنشأها
-    teams_created = relationship('Team', backref='creator', lazy=True)       # الفرق التي أنشأها
-    team_memberships = relationship('TeamMember', backref='promoter', lazy=True)  # عضوية الفرق
+    products = relationship('Product', backref='merchant', lazy=True)
+    short_links = relationship('ShortLink', backref='promoter', lazy=True)
+    teams_created = relationship('Team', backref='creator', lazy=True)
+    team_memberships = relationship('TeamMember', backref='promoter', lazy=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     
     def to_dict(self):
@@ -143,7 +142,6 @@ class ViralGroupChallenge(db.Model):
     product_cost = Column(Float)
     discount_applied = Column(Float, default=0.0)
     total_sales_generated = Column(Float, default=0.0)
-    # ربط التحدي بفريق (اختياري)
     team_id = Column(Integer, ForeignKey('teams.id'), nullable=True)
     
     def to_dict(self):
@@ -179,7 +177,6 @@ class Transaction(db.Model):
     commission_paid = Column(Float)
     discount_given = Column(Float)
     created_at = Column(DateTime, default=datetime.utcnow)
-    # ربط بالمنتج والرابط القصير (جديد)
     product_id = Column(Integer, ForeignKey('products.id'), nullable=True)
     short_link_id = Column(Integer, ForeignKey('short_links.id'), nullable=True)
     
@@ -202,12 +199,11 @@ class Product(db.Model):
     name = Column(String(200), nullable=False)
     description = Column(Text)
     price = Column(Float, nullable=False)
-    cost = Column(Float, nullable=False)          # تكلفة المنتج للتاجر
+    cost = Column(Float, nullable=False)
     merchant_id = Column(Integer, ForeignKey('promoters.id'), nullable=False)
     image_url = Column(String(500))
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
-    # العلاقات
     short_links = relationship('ShortLink', backref='product', lazy=True)
     transactions = relationship('Transaction', backref='product', lazy=True)
     
@@ -229,12 +225,11 @@ class ShortLink(db.Model):
     id = Column(Integer, primary_key=True)
     code = Column(String(20), unique=True, nullable=False, index=True)
     product_id = Column(Integer, ForeignKey('products.id'), nullable=False)
-    promoter_id = Column(Integer, ForeignKey('promoters.id'), nullable=False)  # من أنشأ الرابط
+    promoter_id = Column(Integer, ForeignKey('promoters.id'), nullable=False)
     clicks_count = Column(Integer, default=0)
-    conversions = Column(Integer, default=0)       # عدد المبيعات المحققة
+    conversions = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     is_active = Column(Boolean, default=True)
-    # العلاقات
     clicks = relationship('Click', backref='short_link', lazy=True)
     transactions = relationship('Transaction', backref='short_link', lazy=True)
     
@@ -262,10 +257,9 @@ class Click(db.Model):
     user_agent = Column(Text)
     referer = Column(String(500))
     timestamp = Column(DateTime, default=datetime.utcnow)
-    converted = Column(Boolean, default=False)     # هل تحول إلى شراء
+    converted = Column(Boolean, default=False)
     converted_at = Column(DateTime)
-    # بيانات إضافية للتحليل
-    device_type = Column(String(20))   # mobile/desktop/tablet
+    device_type = Column(String(20))
     browser = Column(String(50))
     country = Column(String(50))
     
@@ -290,7 +284,6 @@ class Team(db.Model):
     created_by = Column(Integer, ForeignKey('promoters.id'), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     is_active = Column(Boolean, default=True)
-    # العلاقات
     members = relationship('TeamMember', backref='team', lazy=True)
     challenges = relationship('ViralGroupChallenge', backref='team', lazy=True)
     
@@ -312,7 +305,7 @@ class TeamMember(db.Model):
     team_id = Column(Integer, ForeignKey('teams.id'), nullable=False)
     promoter_id = Column(Integer, ForeignKey('promoters.id'), nullable=False)
     joined_at = Column(DateTime, default=datetime.utcnow)
-    role = Column(String(20), default="member")   # member, leader (المنشئ هو leader)
+    role = Column(String(20), default="member")
     
     def to_dict(self):
         return {
@@ -324,7 +317,7 @@ class TeamMember(db.Model):
             'role': self.role
         }
 
-# ==================== المحرك الرئيسي (معدل) ====================
+# ==================== المحرك الرئيسي ====================
 
 class ViralShieldEngine:
     def __init__(self):
@@ -403,7 +396,6 @@ class ViralShieldEngine:
         promoter = Promoter.query.filter_by(promo_code=promo_code).first()
         if not promoter:
             return {'error': 'كود المروج غير صالح'}
-        # إذا تم تحديد فريق، تحقق من أن المروج عضو في الفريق
         if team_id:
             team = Team.query.get(team_id)
             if not team:
@@ -475,7 +467,6 @@ class ViralShieldEngine:
             promoter.total_earnings += finance['promoter_payout'] * challenge.current_buyers_joined
             promoter.last_sale_date = datetime.utcnow()
             promoter.activity_score = min(100, promoter.activity_score + 10)
-            # إضافة نقاط للمروج (جديد)
             promoter.points += challenge.current_buyers_joined * 5
             self.update_promoter_level(promoter)
             db.session.commit()
@@ -545,7 +536,6 @@ class ViralShieldEngine:
             return f"👋 {promoter_name}، مرحباً! لدينا منتجات جديدة قد تعجب متابعيك."
     
     def update_promoter_level(self, promoter):
-        """تحديث مستوى المروج بناءً على النقاط"""
         if promoter.points >= 500:
             promoter.level = "ذهبي"
         elif promoter.points >= 200:
@@ -558,7 +548,7 @@ class ViralShieldEngine:
 
 engine = ViralShieldEngine()
 
-# ==================== واجهة المستخدم (HTML/CSS/JS) - لون ذهبي/أسود/أبيض/أصفر ====================
+# ==================== واجهة المستخدم ====================
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -714,7 +704,6 @@ HTML_TEMPLATE = """
             background: linear-gradient(90deg, var(--gold), transparent);
             margin: 20px 0;
         }
-        /* تخصيص الرسوم البيانية */
         .chart-container {
             background: rgba(0,0,0,0.5);
             border-radius: 15px;
@@ -729,10 +718,28 @@ HTML_TEMPLATE = """
             text-align: center;
             font-size: 0.9rem;
         }
-        .promo-code-no-link {
+        /* ✅ منع أي تفاعل مع كود المروج نهائياً */
+        .promo-code-safe {
             color: var(--gold);
             font-weight: bold;
             cursor: default;
+            user-select: text;
+            pointer-events: none;
+            display: inline-block;
+        }
+        /* منع تحديد النص للروابط القصيرة */
+        .short-link-safe {
+            color: var(--gold);
+            font-weight: bold;
+            cursor: pointer;
+            text-decoration: underline;
+        }
+        .short-link-safe:hover {
+            color: var(--yellow);
+        }
+        /* منع أي أحداث غير مرغوب فيها */
+        .no-click {
+            pointer-events: none !important;
         }
     </style>
 </head>
@@ -741,7 +748,7 @@ HTML_TEMPLATE = """
 <nav class="navbar navbar-expand-lg navbar-dark">
     <div class="container">
         <span class="navbar-brand"><i class="bi bi-shield-shaded"></i> ViralShield AI</span>
-        <span class="text-gold">v3.0.2 | نظام متكامل</span>
+        <span class="text-gold">v3.0.3 | نظام متكامل</span>
     </div>
 </nav>
 
@@ -890,7 +897,7 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <!-- باقي الأقسام (التسجيل، التحديات، التحليل) -->
+    <!-- باقي الأقسام -->
     <div class="row mt-4">
         <div class="col-md-6">
             <div class="card p-3">
@@ -936,7 +943,7 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <!-- قائمة المروجين مع تحليل الخمول (تم إزالة الرابط من الكود) -->
+    <!-- قائمة المروجين - ✅ كود المروج غير قابل للضغط نهائياً -->
     <div class="card mt-4 p-4">
         <h5 class="text-gold"><i class="bi bi-person-badge"></i> المروجون وتحليل الخمول</h5>
         <div class="table-responsive">
@@ -1019,7 +1026,7 @@ HTML_TEMPLATE = """
         } catch(e) { console.error(e); }
     }
 
-    // ===== المروجين (تم إزالة الرابط التشعبي من الكود) =====
+    // ===== المروجين - ✅ تم إزالة الرابط التشعبي نهائياً =====
     async function loadPromoters() {
         try {
             const promoters = await fetchAPI('/api/promoters/all');
@@ -1029,7 +1036,7 @@ HTML_TEMPLATE = """
                 let riskBadge = p.is_at_risk ? '<span class="badge bg-danger">خطر</span>' : '<span class="badge bg-success">نشط</span>';
                 let row = `<tr>
                     <td>${p.name}</td>
-                    <td class="promo-code-no-link">${p.promo_code}</td>   <!-- نص عادي بدون رابط -->
+                    <td><span class="promo-code-safe">${p.promo_code}</span></td>
                     <td>${p.total_sales}</td>
                     <td>${p.total_earnings}</td>
                     <td><span class="badge bg-gold text-black">${p.level}</span></td>
@@ -1072,7 +1079,7 @@ HTML_TEMPLATE = """
         const data = await fetchAPI('/api/product/create', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({name, description: desc, price, cost, merchant_id: 1})  // مؤقتاً merchant_id=1
+            body: JSON.stringify({name, description: desc, price, cost, merchant_id: 1})
         });
         if (data.product) {
             document.getElementById('productResult').innerHTML = `<div class="alert alert-success">✅ تم إضافة المنتج</div>`;
@@ -1096,7 +1103,7 @@ HTML_TEMPLATE = """
                     <td>${link.clicks_count}</td>
                     <td>${link.conversions}</td>
                     <td>${link.conversion_rate}%</td>
-                    <td><a href="/r/${link.code}" target="_blank" class="text-gold">/r/${link.code}</a></td>
+                    <td><a href="/r/${link.code}" target="_blank" class="short-link-safe">/r/${link.code}</a></td>
                 </tr>`;
                 tbody.innerHTML += row;
             });
@@ -1158,7 +1165,7 @@ HTML_TEMPLATE = """
         const data = await fetchAPI('/api/team/create', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({name, description: desc, promoter_id: 1})  // مؤقتاً
+            body: JSON.stringify({name, description: desc, promoter_id: 1})
         });
         if (data.team) {
             document.getElementById('teamResult').innerHTML = `<div class="alert alert-success">✅ تم إنشاء الفريق</div>`;
@@ -1172,7 +1179,7 @@ HTML_TEMPLATE = """
         const data = await fetchAPI(`/api/team/join/${teamId}`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({promoter_id: 1})  // مؤقتاً
+            body: JSON.stringify({promoter_id: 1})
         });
         if (data.success) {
             alert('تم الانضمام للفريق');
@@ -1186,7 +1193,6 @@ HTML_TEMPLATE = """
     async function loadCharts() {
         try {
             const stats = await fetchAPI('/api/analytics/charts');
-            // رسم النقرات اليومية
             const ctx1 = document.getElementById('clicksChart').getContext('2d');
             new Chart(ctx1, {
                 type: 'bar',
@@ -1211,7 +1217,6 @@ HTML_TEMPLATE = """
                     }
                 }
             });
-            // رسم توزيع الأجهزة
             const ctx2 = document.getElementById('deviceChart').getContext('2d');
             new Chart(ctx2, {
                 type: 'pie',
@@ -1299,14 +1304,54 @@ HTML_TEMPLATE = """
 </html>
 """
 
-# ==================== نقاط النهاية API (المضافة والمعدلة) ====================
+# ==================== نقاط النهاية API ====================
 
 @app.route('/')
 def index():
-    """الصفحة الرئيسية - الواجهة المتكاملة"""
     return render_template_string(HTML_TEMPLATE)
 
-# ---------- نقاط API الحالية (محفوظة) ----------
+# ---------- نقطة عرض المنتج (للروابط القصيرة) ----------
+@app.route('/product/<int:product_id>')
+def product_page(product_id):
+    product = Product.query.get(product_id)
+    if not product:
+        return "المنتج غير موجود", 404
+    return f"""
+    <!DOCTYPE html>
+    <html dir="rtl">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>{product.name}</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+        <style>
+            body {{ background: #1a1a1a; color: #fff; font-family: 'Tajawal', sans-serif; }}
+            .product-card {{ background: rgba(20,20,20,0.9); border: 1px solid #D4A017; border-radius: 20px; padding: 30px; margin-top: 50px; }}
+            .text-gold {{ color: #FFD700; }}
+            .btn-gold {{ background: #FFD700; color: #000; border: none; border-radius: 50px; padding: 10px 30px; font-weight: bold; }}
+            .btn-gold:hover {{ background: #FFC107; color: #000; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="product-card">
+                <h1 class="text-gold">{product.name}</h1>
+                <p class="text-white-50">{product.description or 'وصف المنتج'}</p>
+                <h2 class="text-gold">السعر: {product.price} ر.س</h2>
+                <button class="btn-gold mt-3" onclick="alert('تم إضافة المنتج للسلة!')"><i class="bi bi-cart-plus"></i> أضف للسلة</button>
+                <br><br>
+                <a href="/" class="text-gold"><i class="bi bi-arrow-right"></i> العودة للرئيسية</a>
+            </div>
+        </div>
+        <footer class="text-center text-gold mt-5" style="border-top:1px solid #D4A017; padding:15px;">
+            إعداد وتصميم م/ وسيم الحميدي &copy; 2026
+        </footer>
+    </body>
+    </html>
+    """
+
+# ---------- نقاط API الحالية ----------
 @app.route('/api/promoters/all', methods=['GET'])
 def get_all_promoters():
     promoters = Promoter.query.order_by(Promoter.id.desc()).all()
@@ -1490,7 +1535,6 @@ def dashboard_stats():
         at_risk_promoters = Promoter.query.filter_by(is_at_risk_of_churn=True).count()
         total_sales = db.session.query(db.func.sum(Transaction.amount)).filter_by(transaction_type='SALE').scalar() or 0
         total_merchant_profit = db.session.query(db.func.sum(Transaction.merchant_profit)).scalar() or 0
-        # إحصاءات الروابط القصيرة
         total_clicks = db.session.query(db.func.sum(ShortLink.clicks_count)).scalar() or 0
         total_conversions = db.session.query(db.func.sum(ShortLink.conversions)).scalar() or 0
         conversion_rate = round((total_conversions / total_clicks * 100) if total_clicks > 0 else 0, 2)
@@ -1527,7 +1571,6 @@ def health_check():
         return jsonify({'status': 'unhealthy', 'error': str(e)}), 500
 
 # ---------- نقاط API الجديدة ----------
-# المنتجات
 @app.route('/api/products', methods=['GET'])
 def list_products():
     products = Product.query.filter_by(is_active=True).all()
@@ -1553,7 +1596,6 @@ def create_product():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# الروابط القصيرة
 @app.route('/api/shortlinks', methods=['GET'])
 def list_shortlinks():
     links = ShortLink.query.order_by(ShortLink.created_at.desc()).all()
@@ -1569,7 +1611,6 @@ def create_shortlink():
         promoter = Promoter.query.filter_by(promo_code=data['promo_code']).first()
         if not promoter:
             return jsonify({'error': 'كود المروج غير صالح'}), 404
-        # توليد كود فريد
         code = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(6))
         while ShortLink.query.filter_by(code=code).first():
             code = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(6))
@@ -1584,13 +1625,12 @@ def create_shortlink():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# مسار إعادة التوجيه للروابط القصيرة
+# ✅ مسار الروابط القصيرة - يعمل بشكل صحيح
 @app.route('/r/<code>')
 def redirect_shortlink(code):
     short_link = ShortLink.query.filter_by(code=code, is_active=True).first()
     if not short_link:
-        return "الرابط غير صالح أو منتهي الصلاحية", 404
-    # تسجيل النقرة
+        return "⚠️ الرابط غير صالح أو منتهي الصلاحية", 404
     click = Click(
         short_link_id=short_link.id,
         ip_address=request.remote_addr,
@@ -1602,10 +1642,8 @@ def redirect_shortlink(code):
     db.session.add(click)
     short_link.clicks_count += 1
     db.session.commit()
-    # إعادة توجيه إلى صفحة المنتج (يمكن تعديلها إلى رابط المنتج الفعلي)
-    return redirect(f"/product/{short_link.product_id}")
+    return redirect(url_for('product_page', product_id=short_link.product_id))
 
-# نقطة لتحديث حالة النقرة إلى محولة (للمبيعات)
 @app.route('/api/click/convert', methods=['POST'])
 def convert_click():
     try:
@@ -1615,7 +1653,6 @@ def convert_click():
             return jsonify({'error': 'النقرة غير موجودة'}), 404
         click.converted = True
         click.converted_at = datetime.utcnow()
-        # تحديث عدد التحويلات في الرابط القصير
         short_link = ShortLink.query.get(click.short_link_id)
         if short_link:
             short_link.conversions += 1
@@ -1624,7 +1661,6 @@ def convert_click():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# الفرق
 @app.route('/api/teams', methods=['GET'])
 def list_teams():
     teams = Team.query.filter_by(is_active=True).all()
@@ -1644,7 +1680,6 @@ def create_team():
         )
         db.session.add(team)
         db.session.commit()
-        # إضافة المنشئ كعضو (قائد)
         member = TeamMember(team_id=team.id, promoter_id=promoter.id, role='leader')
         db.session.add(member)
         db.session.commit()
@@ -1662,7 +1697,6 @@ def join_team(team_id):
         team = Team.query.get(team_id)
         if not team:
             return jsonify({'error': 'الفريق غير موجود'}), 404
-        # التحقق من العضوية المسبقة
         existing = TeamMember.query.filter_by(team_id=team_id, promoter_id=promoter.id).first()
         if existing:
             return jsonify({'error': 'أنت بالفعل عضو في هذا الفريق'}), 400
@@ -1673,11 +1707,9 @@ def join_team(team_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# تحليلات متقدمة (للرسوم البيانية)
 @app.route('/api/analytics/charts', methods=['GET'])
 def chart_data():
     try:
-        # بيانات النقرات اليومية (آخر 7 أيام)
         daily_clicks = []
         labels = []
         for i in range(6, -1, -1):
@@ -1687,7 +1719,6 @@ def chart_data():
             count = Click.query.filter(Click.timestamp >= start, Click.timestamp < end).count()
             daily_clicks.append(count)
             labels.append(day.strftime('%Y-%m-%d'))
-        # توزيع الأجهزة
         mobile_count = Click.query.filter(Click.device_type == 'mobile').count()
         desktop_count = Click.query.filter(Click.device_type == 'desktop').count()
         other_count = Click.query.filter(Click.device_type.notin_(['mobile', 'desktop'])).count()
@@ -1704,7 +1735,6 @@ def chart_data():
 def init_database():
     with app.app_context():
         db.create_all()
-        # إنشاء مروج تجريبي (تاجر ومسوق)
         if Promoter.query.count() == 0:
             demo_merchant = Promoter(
                 name="أحمد التاجر",
@@ -1728,7 +1758,6 @@ def init_database():
             )
             db.session.add(demo_promoter)
             db.session.commit()
-            # إضافة منتج تجريبي
             product = Product(
                 name="هاتف ذكي X100",
                 description="هاتف متطور بمواصفات عالية",
@@ -1750,12 +1779,9 @@ if __name__ == '__main__':
 ╔══════════════════════════════════════════════════════════╗
 ║     🚀 ViralShield AI Engine - النسخة المتكاملة         ║
 ║     📍 Running on: http://0.0.0.0:{port}                 ║
-║     🎨 UI متاحة على الصفحة الرئيسية                     ║
-║     🧠 AI Systems: Active                               ║
-║     🔐 Fraud Protection: Enabled                        ║
-║     🔗 Short Links & Analytics: Active                  ║
-║     🛍️ Product & Teams: Active                         ║
-║     ✅ تم إصلاح مشكلة الضغط على كود المروج              ║
+║     ✅ تم إصلاح مشكلة كود المروج نهائياً                  ║
+║     ✅ الروابط القصيرة تعمل عبر /r/<code>               ║
+║     ✅ صفحة المنتج تعمل عبر /product/<id>               ║
 ║     © إعداد وتصميم م/ وسيم الحميدي                      ║
 ╚══════════════════════════════════════════════════════════╝
     """)
