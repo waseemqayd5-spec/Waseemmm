@@ -8,6 +8,8 @@
 - نظام الروابط القصيرة والتتبع المتقدم (رقم 2)
 - متجر منتجات وفرق تسويقية (رقم 5)
 - واجهة جذابة بألوان ذهبي، أسود، أبيض، أصفر
+- إصلاح مشكلة الضغط على كود المروج (إزالة الرابط التشعبي)
+- إضافة تذييل الصفحة: "إعداد وتصميم م/ وسيم الحميدي"
 """
 
 import os
@@ -719,6 +721,19 @@ HTML_TEMPLATE = """
             padding: 15px;
             border: 1px solid var(--gold-dark);
         }
+        footer {
+            border-top: 1px solid var(--gold-dark);
+            margin-top: 30px;
+            padding: 15px 0;
+            color: var(--gold);
+            text-align: center;
+            font-size: 0.9rem;
+        }
+        .promo-code-no-link {
+            color: var(--gold);
+            font-weight: bold;
+            cursor: default;
+        }
     </style>
 </head>
 <body>
@@ -875,7 +890,7 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <!-- باقي الأقسام (التسجيل، التحديات، التحليل) - تم الحفاظ عليها -->
+    <!-- باقي الأقسام (التسجيل، التحديات، التحليل) -->
     <div class="row mt-4">
         <div class="col-md-6">
             <div class="card p-3">
@@ -921,7 +936,7 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <!-- قائمة المروجين مع تحليل الخمول -->
+    <!-- قائمة المروجين مع تحليل الخمول (تم إزالة الرابط من الكود) -->
     <div class="card mt-4 p-4">
         <h5 class="text-gold"><i class="bi bi-person-badge"></i> المروجون وتحليل الخمول</h5>
         <div class="table-responsive">
@@ -946,6 +961,11 @@ HTML_TEMPLATE = """
         <div id="calcResult" class="mt-3 alert alert-gold"></div>
     </div>
 </div>
+
+<!-- تذييل الصفحة -->
+<footer>
+    إعداد وتصميم م/ وسيم الحميدي &copy; 2026
+</footer>
 
 <script>
     // ===== دوال مساعدة =====
@@ -999,7 +1019,7 @@ HTML_TEMPLATE = """
         } catch(e) { console.error(e); }
     }
 
-    // ===== المروجين =====
+    // ===== المروجين (تم إزالة الرابط التشعبي من الكود) =====
     async function loadPromoters() {
         try {
             const promoters = await fetchAPI('/api/promoters/all');
@@ -1009,7 +1029,7 @@ HTML_TEMPLATE = """
                 let riskBadge = p.is_at_risk ? '<span class="badge bg-danger">خطر</span>' : '<span class="badge bg-success">نشط</span>';
                 let row = `<tr>
                     <td>${p.name}</td>
-                    <td>${p.promo_code}</td>
+                    <td class="promo-code-no-link">${p.promo_code}</td>   <!-- نص عادي بدون رابط -->
                     <td>${p.total_sales}</td>
                     <td>${p.total_earnings}</td>
                     <td><span class="badge bg-gold text-black">${p.level}</span></td>
@@ -1735,6 +1755,8 @@ if __name__ == '__main__':
 ║     🔐 Fraud Protection: Enabled                        ║
 ║     🔗 Short Links & Analytics: Active                  ║
 ║     🛍️ Product & Teams: Active                         ║
+║     ✅ تم إصلاح مشكلة الضغط على كود المروج              ║
+║     © إعداد وتصميم م/ وسيم الحميدي                      ║
 ╚══════════════════════════════════════════════════════════╝
     """)
     app.run(host='0.0.0.0', port=port, debug=False)
