@@ -8,9 +8,11 @@
 - نظام الروابط القصيرة والتتبع المتقدم (رقم 2)
 - متجر منتجات وفرق تسويقية (رقم 5)
 - واجهة جذابة بألوان ذهبي، أسود، أبيض، أصفر
-- ✅ **تم إصلاح مشكلة الضغط على كود المروج (إزالة الرابط التشعبي نهائياً)**
-- ✅ **تم إصلاح مسار الروابط القصيرة /r/<code>**
-- ✅ **إضافة صفحة عرض المنتج**
+- ✅ المشاركة التلقائية على وسائل التواصل الاجتماعي (رقم 2)
+- ✅ نظام الكوبونات الديناميكية للمشترين (رقم 3)
+- ✅ العمولة المتدرجة (Tiered Commission) (رقم 7)
+- ✅ تحليل سلوك العميل (Customer Journey) (رقم 11)
+- ✅ تم إصلاح مشكلة الضغط على كود المروج نهائياً
 - إضافة تذييل الصفحة: "إعداد وتصميم م/ وسيم الحميدي"
 """
 
@@ -20,6 +22,7 @@ import secrets
 import string
 from datetime import datetime, timedelta
 from functools import wraps
+import json
 
 from flask import Flask, request, jsonify, render_template_string, redirect, url_for, abort
 from flask_sqlalchemy import SQLAlchemy
@@ -43,7 +46,6 @@ if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# إعدادات التجميع فقط لـ PostgreSQL (تجنب خطأ SQLite)
 is_sqlite = DATABASE_URL.startswith('sqlite://')
 if not is_sqlite:
     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
@@ -76,12 +78,17 @@ class Promoter(db.Model):
     level = Column(String(20), default="برونز")
     points = Column(Integer, default=0)
     is_merchant = Column(Boolean, default=False)
+    # العمولة المتدرجة (رقم 7)
+    monthly_sales = Column(Integer, default=0)
+    tier = Column(String(20), default="برونز")
     fingerprints = relationship('DeviceFingerprint', backref='promoter', lazy=True)
     challenges = relationship('ViralGroupChallenge', backref='promoter', lazy=True)
     products = relationship('Product', backref='merchant', lazy=True)
     short_links = relationship('ShortLink', backref='promoter', lazy=True)
     teams_created = relationship('Team', backref='creator', lazy=True)
     team_memberships = relationship('TeamMember', backref='promoter', lazy=True)
+    # كوبونات (رقم 3)
+    coupons = relationship('Coupon', backref='promoter', lazy=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     
     def to_dict(self):
@@ -96,7 +103,9 @@ class Promoter(db.Model):
             'is_at_risk': self.is_at_risk_of_churn,
             'level': self.level,
             'points': self.points,
-            'is_merchant': self.is_merchant
+            'is_merchant': self.is_merchant,
+            'monthly_sales': self.monthly_sales,
+            'tier': self.tier
         }
 
 class DeviceFingerprint(db.Model):
@@ -179,6 +188,10 @@ class Transaction(db.Model):
     created_at = Column(DateTime, default=datetime.utcnow)
     product_id = Column(Integer, ForeignKey('products.id'), nullable=True)
     short_link_id = Column(Integer, ForeignKey('short_links.id'), nullable=True)
+    # رحلة العميل (رقم 11)
+    customer_id = Column(String(100), nullable=True)
+    session_id = Column(String(100), nullable=True)
+    step = Column(String(50), default="click")
     
     def to_dict(self):
         return {
@@ -188,7 +201,9 @@ class Transaction(db.Model):
             'merchant_profit': round(self.merchant_profit, 2) if self.merchant_profit else 0,
             'commission_paid': round(self.commission_paid, 2) if self.commission_paid else 0,
             'discount_given': round(self.discount_given, 2) if self.discount_given else 0,
-            'date': self.created_at.isoformat()
+            'date': self.created_at.isoformat(),
+            'customer_id': self.customer_id,
+            'step': self.step
         }
 
 # ---------- النماذج الجديدة ----------
@@ -206,6 +221,7 @@ class Product(db.Model):
     created_at = Column(DateTime, default=datetime.utcnow)
     short_links = relationship('ShortLink', backref='product', lazy=True)
     transactions = relationship('Transaction', backref='product', lazy=True)
+    coupons = relationship('Coupon', backref='product', lazy=True)  # رقم 3
     
     def to_dict(self):
         return {
@@ -262,6 +278,13 @@ class Click(db.Model):
     device_type = Column(String(20))
     browser = Column(String(50))
     country = Column(String(50))
+    # رحلة العميل (رقم 11)
+    customer_id = Column(String(100), nullable=True)
+    session_id = Column(String(100), nullable=True)
+    step = Column(String(50), default="click")
+    page_visited = Column(String(200))
+    time_spent = Column(Integer, default=0)  # ثواني
+    exited_at = Column(DateTime)
     
     def to_dict(self):
         return {
@@ -273,7 +296,11 @@ class Click(db.Model):
             'converted_at': self.converted_at.isoformat() if self.converted_at else None,
             'device_type': self.device_type,
             'browser': self.browser,
-            'country': self.country
+            'country': self.country,
+            'customer_id': self.customer_id,
+            'step': self.step,
+            'page_visited': self.page_visited,
+            'time_spent': self.time_spent
         }
 
 class Team(db.Model):
@@ -317,6 +344,85 @@ class TeamMember(db.Model):
             'role': self.role
         }
 
+# ---------- نماذج الميزات الجديدة ----------
+
+# 3. نظام الكوبونات الديناميكية
+class Coupon(db.Model):
+    __tablename__ = 'coupons'
+    id = Column(Integer, primary_key=True)
+    code = Column(String(30), unique=True, nullable=False, index=True)
+    product_id = Column(Integer, ForeignKey('products.id'), nullable=False)
+    promoter_id = Column(Integer, ForeignKey('promoters.id'), nullable=False)
+    discount_percentage = Column(Float, default=0.0)
+    discount_amount = Column(Float, default=0.0)
+    is_percentage = Column(Boolean, default=True)  # True نسبة مئوية، False قيمة ثابتة
+    is_used = Column(Boolean, default=False)
+    used_by = Column(String(100))  # معرف العميل
+    used_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime)
+    max_uses = Column(Integer, default=1)
+    use_count = Column(Integer, default=0)
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'code': self.code,
+            'product_id': self.product_id,
+            'product_name': self.product.name if self.product else None,
+            'promoter_id': self.promoter_id,
+            'promoter_name': self.promoter.name if self.promoter else None,
+            'discount_percentage': self.discount_percentage,
+            'discount_amount': self.discount_amount,
+            'is_percentage': self.is_percentage,
+            'is_used': self.is_used,
+            'used_by': self.used_by,
+            'expires_at': self.expires_at.isoformat() if self.expires_at else None,
+            'created_at': self.created_at.isoformat(),
+            'max_uses': self.max_uses,
+            'use_count': self.use_count
+        }
+
+# 11. تحليل سلوك العميل - جدول إضافي للجلسات
+class CustomerJourney(db.Model):
+    __tablename__ = 'customer_journeys'
+    id = Column(Integer, primary_key=True)
+    customer_id = Column(String(100), nullable=False, index=True)
+    session_id = Column(String(100), nullable=False, index=True)
+    short_link_id = Column(Integer, ForeignKey('short_links.id'), nullable=False)
+    promoter_id = Column(Integer, ForeignKey('promoters.id'), nullable=False)
+    product_id = Column(Integer, ForeignKey('products.id'), nullable=False)
+    first_click = Column(DateTime, default=datetime.utcnow)
+    last_activity = Column(DateTime, default=datetime.utcnow)
+    total_time_seconds = Column(Integer, default=0)
+    pages_visited = Column(Text, default='[]')  # JSON array
+    steps = Column(Text, default='[]')  # JSON array من الخطوات
+    converted = Column(Boolean, default=False)
+    converted_at = Column(DateTime)
+    dropped_at = Column(DateTime)  # وقت التخلي عن الشراء
+    drop_reason = Column(String(200))
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'customer_id': self.customer_id,
+            'session_id': self.session_id,
+            'short_link_id': self.short_link_id,
+            'promoter_id': self.promoter_id,
+            'promoter_name': self.promoter.name if self.promoter else None,
+            'product_id': self.product_id,
+            'product_name': self.product.name if self.product else None,
+            'first_click': self.first_click.isoformat(),
+            'last_activity': self.last_activity.isoformat(),
+            'total_time_seconds': self.total_time_seconds,
+            'pages_visited': json.loads(self.pages_visited) if self.pages_visited else [],
+            'steps': json.loads(self.steps) if self.steps else [],
+            'converted': self.converted,
+            'converted_at': self.converted_at.isoformat() if self.converted_at else None,
+            'dropped_at': self.dropped_at.isoformat() if self.dropped_at else None,
+            'drop_reason': self.drop_reason
+        }
+
 # ==================== المحرك الرئيسي ====================
 
 class ViralShieldEngine:
@@ -352,8 +458,22 @@ class ViralShieldEngine:
             'signals': fraud_signals
         }
     
+    # 7. العمولة المتدرجة (Tiered Commission)
+    def get_commission_rate(self, promoter):
+        """حساب نسبة العمولة بناءً على المبيعات الشهرية"""
+        if promoter.monthly_sales >= 100:
+            return 0.25  # 25% - البلاتيني
+        elif promoter.monthly_sales >= 50:
+            return 0.20  # 20% - الذهبي
+        elif promoter.monthly_sales >= 20:
+            return 0.15  # 15% - الفضي
+        elif promoter.monthly_sales >= 5:
+            return 0.12  # 12% - البرونزي
+        else:
+            return 0.10  # 10% - الأساسي
+    
     def calculate_smart_margin(self, product_price, product_cost, is_viral_success=False, 
-                              promoter_performance=0.5, order_volume=1):
+                              promoter_performance=0.5, order_volume=1, promoter=None):
         gross_profit = product_price - product_cost
         if gross_profit <= 0:
             return {
@@ -362,17 +482,22 @@ class ViralShieldEngine:
                 'merchant_secured_profit': 0,
                 'error': 'المنتج لا يحقق هامش ربح كافي'
             }
+        # حساب نسبة العمولة المتدرجة
+        if promoter:
+            commission_rate = self.get_commission_rate(promoter)
+        else:
+            commission_rate = 0.10
         max_total_discount = min(product_price * 0.9, gross_profit * 0.95)
         if is_viral_success:
             max_discount_pct = min(0.40, (gross_profit * 0.8) / product_price)
             buyer_discount = min(gross_profit * max_discount_pct, max_total_discount)
-            promoter_commission = gross_profit * 0.20
+            promoter_commission = gross_profit * commission_rate
             if promoter_performance > 0.7:
                 promoter_commission *= 1.2
         else:
             max_discount_pct = min(0.15, (gross_profit * 0.5) / product_price)
             buyer_discount = min(gross_profit * max_discount_pct, max_total_discount)
-            promoter_commission = gross_profit * 0.10
+            promoter_commission = gross_profit * commission_rate * 0.8
             if order_volume >= 5:
                 buyer_discount = min(buyer_discount * 1.1, max_total_discount)
                 promoter_commission *= 0.95
@@ -388,7 +513,8 @@ class ViralShieldEngine:
             'promoter_payout': round(promoter_commission, 2),
             'merchant_secured_profit': round(merchant_net_profit, 2),
             'discount_percentage': round((buyer_discount / product_price) * 100, 1),
-            'commission_percentage': round((promoter_commission / gross_profit) * 100, 1)
+            'commission_percentage': round((promoter_commission / gross_profit) * 100, 1),
+            'commission_rate_used': round(commission_rate * 100, 1)
         }
     
     def create_viral_challenge(self, buyer_id, promo_code, product_price, product_cost, 
@@ -429,7 +555,7 @@ class ViralShieldEngine:
             'team_id': team_id
         }
     
-    def process_viral_purchase(self, challenge_id, buyer_id, device_hash):
+    def process_viral_purchase(self, challenge_id, buyer_id, device_hash, customer_id=None):
         challenge = ViralGroupChallenge.query.get(challenge_id)
         if not challenge:
             return {'error': 'التحدي غير موجود'}
@@ -444,10 +570,12 @@ class ViralShieldEngine:
         if challenge.current_buyers_joined >= challenge.required_buyers:
             challenge.status = "SUCCESS"
             challenge.completed_at = datetime.utcnow()
+            promoter = Promoter.query.get(challenge.promoter_id)
             finance = self.calculate_smart_margin(
                 challenge.product_price,
                 challenge.product_cost,
-                is_viral_success=True
+                is_viral_success=True,
+                promoter=promoter
             )
             challenge.discount_applied = finance['discount_percentage']
             transaction = Transaction(
@@ -459,23 +587,28 @@ class ViralShieldEngine:
                 product_cost=challenge.product_cost,
                 merchant_profit=finance['merchant_secured_profit'],
                 commission_paid=finance['promoter_payout'],
-                discount_given=finance['final_price']
+                discount_given=finance['final_price'],
+                customer_id=customer_id,
+                step="purchase"
             )
             db.session.add(transaction)
-            promoter = Promoter.query.get(challenge.promoter_id)
             promoter.total_sales += challenge.current_buyers_joined
+            promoter.monthly_sales += challenge.current_buyers_joined  # للعمولة المتدرجة
             promoter.total_earnings += finance['promoter_payout'] * challenge.current_buyers_joined
             promoter.last_sale_date = datetime.utcnow()
             promoter.activity_score = min(100, promoter.activity_score + 10)
             promoter.points += challenge.current_buyers_joined * 5
             self.update_promoter_level(promoter)
             db.session.commit()
+            # 3. إنشاء كوبون للمشتري
+            coupon = self.create_coupon_for_buyer(promoter, challenge.product_id, buyer_id)
             return {
                 'status': 'SUCCESS',
                 'message': '🎉 مبروك! اكتمل التحدي الجماعي',
                 'final_price': finance['final_price'],
                 'discount_applied': f"{finance['discount_percentage']}%",
-                'savings': round(challenge.product_price - finance['final_price'], 2)
+                'savings': round(challenge.product_price - finance['final_price'], 2),
+                'coupon_code': coupon.code if coupon else None
             }
         db.session.commit()
         remaining = challenge.required_buyers - challenge.current_buyers_joined
@@ -486,6 +619,28 @@ class ViralShieldEngine:
             'remaining_to_activate': remaining,
             'current_discount': '5%'
         }
+    
+    # 3. إنشاء كوبون للمشتري
+    def create_coupon_for_buyer(self, promoter, product_id, buyer_id):
+        """إنشاء كوبون خصم للمشتري بعد اكتمال التحدي"""
+        import random
+        code = f"VIP-{promoter.promo_code[:4]}-{secrets.token_hex(3).upper()}"
+        while Coupon.query.filter_by(code=code).first():
+            code = f"VIP-{promoter.promo_code[:4]}-{secrets.token_hex(3).upper()}"
+        # خصم عشوائي بين 5% و 15%
+        discount = random.randint(5, 15)
+        coupon = Coupon(
+            code=code,
+            product_id=product_id,
+            promoter_id=promoter.id,
+            discount_percentage=discount,
+            is_percentage=True,
+            expires_at=datetime.utcnow() + timedelta(days=30),
+            max_uses=1
+        )
+        db.session.add(coupon)
+        db.session.commit()
+        return coupon
     
     def calculate_churn_probability(self, promoter):
         signals = []
@@ -544,7 +699,62 @@ class ViralShieldEngine:
             promoter.level = "برونزي"
         else:
             promoter.level = "برونز"
+        # تحديث المستوى (tier) بناءً على المبيعات الشهرية
+        if promoter.monthly_sales >= 100:
+            promoter.tier = "بلاتيني"
+        elif promoter.monthly_sales >= 50:
+            promoter.tier = "ذهبي"
+        elif promoter.monthly_sales >= 20:
+            promoter.tier = "فضي"
+        elif promoter.monthly_sales >= 5:
+            promoter.tier = "برونزي"
+        else:
+            promoter.tier = "أساسي"
         db.session.commit()
+
+    # 11. تتبع رحلة العميل
+    def track_customer_journey(self, customer_id, session_id, short_link_id, product_id, 
+                              promoter_id, page_visited, step, time_spent=0):
+        """تسجيل خطوة في رحلة العميل"""
+        journey = CustomerJourney.query.filter_by(
+            customer_id=customer_id, 
+            session_id=session_id
+        ).first()
+        
+        if not journey:
+            # إنشاء رحلة جديدة
+            journey = CustomerJourney(
+                customer_id=customer_id,
+                session_id=session_id,
+                short_link_id=short_link_id,
+                promoter_id=promoter_id,
+                product_id=product_id,
+                first_click=datetime.utcnow(),
+                last_activity=datetime.utcnow(),
+                pages_visited=json.dumps([]),
+                steps=json.dumps([])
+            )
+            db.session.add(journey)
+        
+        # تحديث البيانات
+        pages = json.loads(journey.pages_visited) if journey.pages_visited else []
+        if page_visited and page_visited not in pages:
+            pages.append(page_visited)
+        journey.pages_visited = json.dumps(pages)
+        
+        steps = json.loads(journey.steps) if journey.steps else []
+        steps.append({
+            'step': step,
+            'timestamp': datetime.utcnow().isoformat(),
+            'page': page_visited,
+            'time_spent': time_spent
+        })
+        journey.steps = json.dumps(steps)
+        journey.last_activity = datetime.utcnow()
+        journey.total_time_seconds += time_spent
+        
+        db.session.commit()
+        return journey
 
 engine = ViralShieldEngine()
 
@@ -718,7 +928,6 @@ HTML_TEMPLATE = """
             text-align: center;
             font-size: 0.9rem;
         }
-        /* ✅ منع أي تفاعل مع كود المروج نهائياً */
         .promo-code-safe {
             color: var(--gold);
             font-weight: bold;
@@ -727,7 +936,6 @@ HTML_TEMPLATE = """
             pointer-events: none;
             display: inline-block;
         }
-        /* منع تحديد النص للروابط القصيرة */
         .short-link-safe {
             color: var(--gold);
             font-weight: bold;
@@ -737,10 +945,35 @@ HTML_TEMPLATE = """
         .short-link-safe:hover {
             color: var(--yellow);
         }
-        /* منع أي أحداث غير مرغوب فيها */
         .no-click {
             pointer-events: none !important;
         }
+        /* عمولة متدرجة */
+        .tier-badge {
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 0.8rem;
+        }
+        .tier-platinum { background: #e5e4e2; color: #000; }
+        .tier-gold { background: #FFD700; color: #000; }
+        .tier-silver { background: #C0C0C0; color: #000; }
+        .tier-bronze { background: #CD7F32; color: #fff; }
+        .tier-basic { background: #666; color: #fff; }
+        /* رحلة العميل */
+        .journey-step {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 15px;
+            margin: 2px;
+            font-size: 0.75rem;
+        }
+        .step-click { background: #2196F3; color: #fff; }
+        .step-view { background: #4CAF50; color: #fff; }
+        .step-cart { background: #FF9800; color: #fff; }
+        .step-checkout { background: #9C27B0; color: #fff; }
+        .step-purchase { background: #FFD700; color: #000; }
+        .step-drop { background: #f44336; color: #fff; }
     </style>
 </head>
 <body>
@@ -748,7 +981,7 @@ HTML_TEMPLATE = """
 <nav class="navbar navbar-expand-lg navbar-dark">
     <div class="container">
         <span class="navbar-brand"><i class="bi bi-shield-shaded"></i> ViralShield AI</span>
-        <span class="text-gold">v3.0.3 | نظام متكامل</span>
+        <span class="text-gold">v3.0.4 | نظام متكامل</span>
     </div>
 </nav>
 
@@ -777,6 +1010,30 @@ HTML_TEMPLATE = """
             <div class="stats-card">
                 <h5><i class="bi bi-exclamation-triangle text-gold"></i> مروجين معرضين للخطر</h5>
                 <h2 id="atRiskPromoters">-</h2>
+            </div>
+        </div>
+    </div>
+
+    <!-- الميزات الجديدة: العمولة المتدرجة والمشاركة -->
+    <div class="row">
+        <div class="col-md-6 mb-3">
+            <div class="card p-3">
+                <h5 class="text-gold"><i class="bi bi-bar-chart-fill"></i> العمولة المتدرجة</h5>
+                <p>معدل العمولة الحالي: <strong id="commissionRateDisplay" class="text-gold">10%</strong></p>
+                <p>المستوى: <span id="tierDisplay" class="tier-badge tier-basic">أساسي</span></p>
+                <small>كلما زادت مبيعاتك الشهرية، ترتفع نسبة عمولتك!</small>
+            </div>
+        </div>
+        <div class="col-md-6 mb-3">
+            <div class="card p-3">
+                <h5 class="text-gold"><i class="bi bi-share-fill"></i> مشاركة اجتماعية</h5>
+                <div class="d-flex gap-2 flex-wrap">
+                    <button class="btn btn-gold btn-sm" onclick="shareOnSocial('twitter')"><i class="bi bi-twitter"></i> تويتر</button>
+                    <button class="btn btn-gold btn-sm" onclick="shareOnSocial('facebook')"><i class="bi bi-facebook"></i> فيسبوك</button>
+                    <button class="btn btn-gold btn-sm" onclick="shareOnSocial('whatsapp')"><i class="bi bi-whatsapp"></i> واتساب</button>
+                    <button class="btn btn-gold btn-sm" onclick="shareOnSocial('telegram')"><i class="bi bi-telegram"></i> تيليجرام</button>
+                </div>
+                <div id="shareResult" class="mt-2"></div>
             </div>
         </div>
     </div>
@@ -817,6 +1074,28 @@ HTML_TEMPLATE = """
                     <canvas id="deviceChart"></canvas>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <!-- رحلة العميل (جديد رقم 11) -->
+    <div class="card mt-4 p-4">
+        <h5 class="text-gold"><i class="bi bi-diagram-3"></i> رحلة العميل (Customer Journey)</h5>
+        <div class="table-responsive">
+            <table class="table">
+                <thead><tr><th>العميل</th><th>المنتج</th><th>المروج</th><th>الخطوات</th><th>الوقت (ث)</th><th>الحالة</th></tr></thead>
+                <tbody id="journeyTable"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- الكوبونات (جديد رقم 3) -->
+    <div class="card mt-4 p-4">
+        <h5 class="text-gold"><i class="bi bi-ticket-perforated"></i> الكوبونات الديناميكية</h5>
+        <div class="table-responsive">
+            <table class="table">
+                <thead><tr><th>الكود</th><th>المنتج</th><th>المروج</th><th>الخصم</th><th>الحالة</th><th>انتهاء</th></tr></thead>
+                <tbody id="couponsTable"></tbody>
+            </table>
         </div>
     </div>
 
@@ -943,12 +1222,12 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <!-- قائمة المروجين - ✅ كود المروج غير قابل للضغط نهائياً -->
+    <!-- قائمة المروجين -->
     <div class="card mt-4 p-4">
         <h5 class="text-gold"><i class="bi bi-person-badge"></i> المروجون وتحليل الخمول</h5>
         <div class="table-responsive">
             <table class="table">
-                <thead><tr><th>الاسم</th><th>الكود</th><th>المبيعات</th><th>الأرباح</th><th>المستوى</th><th>نقاط</th><th>نسبة النشاط</th><th>خطر الخمول</th><th>إجراء</th></tr></thead>
+                <thead><tr><th>الاسم</th><th>الكود</th><th>المبيعات</th><th>الشهرية</th><th>الأرباح</th><th>المستوى</th><th>الدرجة</th><th>نسبة النشاط</th><th>خطر الخمول</th><th>إجراء</th></tr></thead>
                 <tbody id="promotersTable"></tbody>
             </table>
         </div>
@@ -996,6 +1275,11 @@ HTML_TEMPLATE = """
                 document.getElementById('totalProducts').innerText = data.overview.total_products || 0;
                 document.getElementById('activeProducts').innerText = data.overview.active_products || 0;
             }
+            if (data.promoter_stats) {
+                document.getElementById('commissionRateDisplay').innerText = data.promoter_stats.commission_rate + '%';
+                document.getElementById('tierDisplay').innerText = data.promoter_stats.tier;
+                document.getElementById('tierDisplay').className = 'tier-badge tier-' + data.promoter_stats.tier.toLowerCase();
+            }
         } catch(e) { console.error(e); }
         loadChallenges();
         loadPromoters();
@@ -1004,6 +1288,55 @@ HTML_TEMPLATE = """
         loadTeams();
         loadCharts();
         loadProductSelect();
+        loadJourneys();
+        loadCoupons();
+    }
+
+    // ===== رحلة العميل (جديد) =====
+    async function loadJourneys() {
+        try {
+            const journeys = await fetchAPI('/api/journeys');
+            const tbody = document.getElementById('journeyTable');
+            tbody.innerHTML = '';
+            journeys.forEach(j => {
+                const steps = j.steps || [];
+                let stepHtml = steps.map(s => {
+                    let cls = 'step-' + (s.step || 'click');
+                    return `<span class="journey-step ${cls}">${s.step || 'نقرة'}</span>`;
+                }).join(' ');
+                let status = j.converted ? '✅ تحول' : (j.dropped_at ? '❌ انسحاب' : '⏳ قيد التقدم');
+                let row = `<tr>
+                    <td>${j.customer_id}</td>
+                    <td>${j.product_name}</td>
+                    <td>${j.promoter_name}</td>
+                    <td>${stepHtml}</td>
+                    <td>${j.total_time_seconds}</td>
+                    <td>${status}</td>
+                </tr>`;
+                tbody.innerHTML += row;
+            });
+        } catch(e) { console.error(e); }
+    }
+
+    // ===== الكوبونات (جديد) =====
+    async function loadCoupons() {
+        try {
+            const coupons = await fetchAPI('/api/coupons');
+            const tbody = document.getElementById('couponsTable');
+            tbody.innerHTML = '';
+            coupons.forEach(c => {
+                let status = c.is_used ? 'مستخدم' : 'نشط';
+                let row = `<tr>
+                    <td><span class="text-gold">${c.code}</span></td>
+                    <td>${c.product_name}</td>
+                    <td>${c.promoter_name}</td>
+                    <td>${c.is_percentage ? c.discount_percentage + '%' : c.discount_amount + ' ر.س'}</td>
+                    <td>${status}</td>
+                    <td>${c.expires_at ? new Date(c.expires_at).toLocaleDateString('ar-SA') : 'لا ينتهي'}</td>
+                </tr>`;
+                tbody.innerHTML += row;
+            });
+        } catch(e) { console.error(e); }
     }
 
     // ===== التحديات =====
@@ -1026,7 +1359,7 @@ HTML_TEMPLATE = """
         } catch(e) { console.error(e); }
     }
 
-    // ===== المروجين - ✅ تم إزالة الرابط التشعبي نهائياً =====
+    // ===== المروجين مع العمولة المتدرجة =====
     async function loadPromoters() {
         try {
             const promoters = await fetchAPI('/api/promoters/all');
@@ -1034,13 +1367,15 @@ HTML_TEMPLATE = """
             tbody.innerHTML = '';
             for (let p of promoters) {
                 let riskBadge = p.is_at_risk ? '<span class="badge bg-danger">خطر</span>' : '<span class="badge bg-success">نشط</span>';
+                let tierClass = 'tier-' + (p.tier || 'basic').toLowerCase();
                 let row = `<tr>
                     <td>${p.name}</td>
                     <td><span class="promo-code-safe">${p.promo_code}</span></td>
                     <td>${p.total_sales}</td>
+                    <td>${p.monthly_sales || 0}</td>
                     <td>${p.total_earnings}</td>
                     <td><span class="badge bg-gold text-black">${p.level}</span></td>
-                    <td>${p.points}</td>
+                    <td><span class="tier-badge ${tierClass}">${p.tier || 'أساسي'}</span></td>
                     <td>${p.activity_score}%</td>
                     <td>${riskBadge}</td>
                     <td><button class="btn btn-sm btn-outline-gold" onclick="predictChurn(${p.id})"><i class="bi bi-graph-up"></i></button></td>
@@ -1237,6 +1572,32 @@ HTML_TEMPLATE = """
         } catch(e) { console.error(e); }
     }
 
+    // ===== المشاركة الاجتماعية (رقم 2) =====
+    function shareOnSocial(platform) {
+        const url = encodeURIComponent(window.location.href);
+        const text = encodeURIComponent('🎯 اكتشف أفضل العروض والتحديات على ViralShield AI! انضم الآن واستفد من خصومات رائعة!');
+        let shareUrl = '';
+        switch(platform) {
+            case 'twitter':
+                shareUrl = `https://twitter.com/intent/tweet?text=${text}&url=${url}`;
+                break;
+            case 'facebook':
+                shareUrl = `https://www.facebook.com/sharer/sharer.php?u=${url}&quote=${text}`;
+                break;
+            case 'whatsapp':
+                shareUrl = `https://api.whatsapp.com/send?text=${text}%20${url}`;
+                break;
+            case 'telegram':
+                shareUrl = `https://t.me/share/url?url=${url}&text=${text}`;
+                break;
+            default:
+                alert('منصة غير مدعومة');
+                return;
+        }
+        window.open(shareUrl, '_blank', 'width=600,height=500');
+        document.getElementById('shareResult').innerHTML = `<div class="alert alert-success">✅ تم فتح نافذة المشاركة على ${platform}</div>`;
+    }
+
     // ===== باقي الدوال =====
     async function registerPromoter() {
         const name = document.getElementById('promoterName').value;
@@ -1284,7 +1645,7 @@ HTML_TEMPLATE = """
         });
         document.getElementById('calcResult').innerHTML = `<strong>النتيجة:</strong><br>
         السعر النهائي: ${data.calculation.final_price} ر.س<br>
-        عمولة المروج: ${data.calculation.promoter_payout} ر.س<br>
+        عمولة المروج: ${data.calculation.promoter_payout} ر.س (${data.calculation.commission_rate_used}%)<br>
         ربح التاجر: ${data.calculation.merchant_secured_profit} ر.س<br>
         نسبة الخصم: ${data.calculation.discount_percentage}%`;
     }
@@ -1310,7 +1671,7 @@ HTML_TEMPLATE = """
 def index():
     return render_template_string(HTML_TEMPLATE)
 
-# ---------- نقطة عرض المنتج (للروابط القصيرة) ----------
+# ---------- صفحة المنتج ----------
 @app.route('/product/<int:product_id>')
 def product_page(product_id):
     product = Product.query.get(product_id)
@@ -1347,6 +1708,25 @@ def product_page(product_id):
         <footer class="text-center text-gold mt-5" style="border-top:1px solid #D4A017; padding:15px;">
             إعداد وتصميم م/ وسيم الحميدي &copy; 2026
         </footer>
+        <script>
+            // تتبع رحلة العميل (جديد)
+            const customerId = 'c' + Date.now();
+            const sessionId = 's' + Date.now() + Math.random().toString(36).substr(2, 5);
+            fetch('/api/journey/track', {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{
+                    customer_id: customerId,
+                    session_id: sessionId,
+                    short_link_id: 1,
+                    product_id: {product.id},
+                    promoter_id: 1,
+                    page_visited: 'product_page',
+                    step: 'view',
+                    time_spent: 5
+                }})
+            }});
+        </script>
     </body>
     </html>
     """
@@ -1468,7 +1848,8 @@ def join_challenge(challenge_id):
         result = engine.process_viral_purchase(
             challenge_id=challenge_id,
             buyer_id=data.get('buyer_id'),
-            device_hash=device_hash
+            device_hash=device_hash,
+            customer_id=data.get('customer_id')
         )
         if 'error' in result:
             return jsonify(result), 400
@@ -1490,14 +1871,17 @@ def challenge_status(challenge_id):
 def calculate_commission():
     try:
         data = request.json
+        # جلب المروج (استخدام بيانات افتراضية أو من الطلب)
+        promoter = Promoter.query.filter_by(promo_code=data.get('promo_code', 'PROMO2024')).first()
         result = engine.calculate_smart_margin(
             product_price=data.get('product_price', 100),
             product_cost=data.get('product_cost', 60),
             is_viral_success=data.get('is_viral_success', False),
             promoter_performance=data.get('promoter_performance', 0.5),
-            order_volume=data.get('order_volume', 1)
+            order_volume=data.get('order_volume', 1),
+            promoter=promoter
         )
-        return jsonify({'calculation': result, 'summary': f"السعر النهائي: {result['final_price']} | عمولة المروج: {result['promoter_payout']} | ربح التاجر: {result['merchant_secured_profit']}"})
+        return jsonify({'calculation': result})
     except Exception as e:
         return jsonify({'error': f'خطأ في الحساب: {str(e)}'}), 500
 
@@ -1540,6 +1924,10 @@ def dashboard_stats():
         conversion_rate = round((total_conversions / total_clicks * 100) if total_clicks > 0 else 0, 2)
         total_products = Product.query.count()
         active_products = Product.query.filter_by(is_active=True).count()
+        # إحصاءات العمولة المتدرجة
+        promoter = Promoter.query.first()
+        commission_rate = engine.get_commission_rate(promoter) * 100 if promoter else 10
+        tier = promoter.tier if promoter else "أساسي"
         return jsonify({
             'overview': {
                 'total_promoters': total_promoters,
@@ -1556,6 +1944,10 @@ def dashboard_stats():
             'financials': {
                 'total_sales': round(total_sales, 2),
                 'total_merchant_profit': round(total_merchant_profit, 2)
+            },
+            'promoter_stats': {
+                'commission_rate': round(commission_rate, 1),
+                'tier': tier
             },
             'system_health': '✅ جميع الأنظمة تعمل بكفاءة'
         })
@@ -1625,24 +2017,41 @@ def create_shortlink():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# ✅ مسار الروابط القصيرة - يعمل بشكل صحيح
 @app.route('/r/<code>')
 def redirect_shortlink(code):
     short_link = ShortLink.query.filter_by(code=code, is_active=True).first()
     if not short_link:
         return "⚠️ الرابط غير صالح أو منتهي الصلاحية", 404
+    # تسجيل النقرة مع رحلة العميل
+    customer_id = request.args.get('cid', f"c{datetime.utcnow().timestamp()}")
+    session_id = request.args.get('sid', f"s{datetime.utcnow().timestamp()}{secrets.token_hex(3)}")
     click = Click(
         short_link_id=short_link.id,
         ip_address=request.remote_addr,
         user_agent=request.headers.get('User-Agent'),
         referer=request.headers.get('Referer'),
         device_type='mobile' if 'Mobile' in request.headers.get('User-Agent', '') else 'desktop',
-        browser=request.headers.get('User-Agent', '')[:50]
+        browser=request.headers.get('User-Agent', '')[:50],
+        customer_id=customer_id,
+        session_id=session_id,
+        step='click',
+        page_visited='short_link_redirect'
     )
     db.session.add(click)
     short_link.clicks_count += 1
     db.session.commit()
-    return redirect(url_for('product_page', product_id=short_link.product_id))
+    # تتبع رحلة العميل
+    engine.track_customer_journey(
+        customer_id=customer_id,
+        session_id=session_id,
+        short_link_id=short_link.id,
+        product_id=short_link.product_id,
+        promoter_id=short_link.promoter_id,
+        page_visited='redirect',
+        step='click',
+        time_spent=0
+    )
+    return redirect(url_for('product_page', product_id=short_link.product_id) + f'?cid={customer_id}&sid={session_id}')
 
 @app.route('/api/click/convert', methods=['POST'])
 def convert_click():
@@ -1656,6 +2065,11 @@ def convert_click():
         short_link = ShortLink.query.get(click.short_link_id)
         if short_link:
             short_link.conversions += 1
+        # تحديث رحلة العميل
+        journey = CustomerJourney.query.filter_by(customer_id=click.customer_id, session_id=click.session_id).first()
+        if journey:
+            journey.converted = True
+            journey.converted_at = datetime.utcnow()
         db.session.commit()
         return jsonify({'message': 'تم تحديث النقرة إلى محولة'})
     except Exception as e:
@@ -1731,6 +2145,103 @@ def chart_data():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+# ---------- نقاط API للميزات الجديدة ----------
+
+# 3. الكوبونات
+@app.route('/api/coupons', methods=['GET'])
+def list_coupons():
+    coupons = Coupon.query.order_by(Coupon.created_at.desc()).all()
+    return jsonify([c.to_dict() for c in coupons])
+
+@app.route('/api/coupon/validate', methods=['POST'])
+def validate_coupon():
+    try:
+        data = request.json
+        coupon = Coupon.query.filter_by(code=data['code'], is_used=False).first()
+        if not coupon:
+            return jsonify({'valid': False, 'error': 'كوبون غير صالح أو مستخدم'}), 404
+        if coupon.expires_at and datetime.utcnow() > coupon.expires_at:
+            return jsonify({'valid': False, 'error': 'انتهت صلاحية الكوبون'}), 400
+        if coupon.use_count >= coupon.max_uses:
+            return jsonify({'valid': False, 'error': 'تم استخدام الكوبون الحد الأقصى'}), 400
+        return jsonify({
+            'valid': True,
+            'coupon': coupon.to_dict(),
+            'discount': coupon.discount_percentage if coupon.is_percentage else coupon.discount_amount
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/coupon/use', methods=['POST'])
+def use_coupon():
+    try:
+        data = request.json
+        coupon = Coupon.query.filter_by(code=data['code']).first()
+        if not coupon:
+            return jsonify({'error': 'كوبون غير صالح'}), 404
+        if coupon.is_used:
+            return jsonify({'error': 'الكوبون مستخدم مسبقاً'}), 400
+        if coupon.expires_at and datetime.utcnow() > coupon.expires_at:
+            return jsonify({'error': 'انتهت صلاحية الكوبون'}), 400
+        coupon.is_used = True
+        coupon.used_by = data.get('used_by')
+        coupon.used_at = datetime.utcnow()
+        coupon.use_count += 1
+        db.session.commit()
+        return jsonify({'message': 'تم استخدام الكوبون بنجاح', 'coupon': coupon.to_dict()})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# 11. رحلة العميل
+@app.route('/api/journeys', methods=['GET'])
+def list_journeys():
+    journeys = CustomerJourney.query.order_by(CustomerJourney.first_click.desc()).limit(50).all()
+    return jsonify([j.to_dict() for j in journeys])
+
+@app.route('/api/journey/track', methods=['POST'])
+def track_journey():
+    try:
+        data = request.json
+        journey = engine.track_customer_journey(
+            customer_id=data['customer_id'],
+            session_id=data['session_id'],
+            short_link_id=data.get('short_link_id', 1),
+            product_id=data['product_id'],
+            promoter_id=data.get('promoter_id', 1),
+            page_visited=data.get('page_visited', 'unknown'),
+            step=data.get('step', 'view'),
+            time_spent=data.get('time_spent', 0)
+        )
+        return jsonify({'success': True, 'journey': journey.to_dict()})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/journey/analytics', methods=['GET'])
+def journey_analytics():
+    try:
+        # إحصائيات سريعة عن رحلة العميل
+        total_journeys = CustomerJourney.query.count()
+        converted = CustomerJourney.query.filter_by(converted=True).count()
+        dropped = CustomerJourney.query.filter(CustomerJourney.dropped_at.isnot(None)).count()
+        conversion_rate = round((converted / total_journeys * 100) if total_journeys > 0 else 0, 2)
+        # أكثر خطوة يتخلى فيها العميل
+        steps_data = {}
+        journeys = CustomerJourney.query.all()
+        for j in journeys:
+            steps = json.loads(j.steps) if j.steps else []
+            for s in steps:
+                step_name = s.get('step', 'unknown')
+                steps_data[step_name] = steps_data.get(step_name, 0) + 1
+        return jsonify({
+            'total_journeys': total_journeys,
+            'converted': converted,
+            'dropped': dropped,
+            'conversion_rate': conversion_rate,
+            'step_frequency': steps_data
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 # ==================== تهيئة قاعدة البيانات ====================
 def init_database():
     with app.app_context():
@@ -1744,7 +2255,9 @@ def init_database():
                 activity_score=85.0,
                 is_merchant=True,
                 points=1000,
-                level="ذهبي"
+                level="ذهبي",
+                monthly_sales=60,
+                tier="ذهبي"
             )
             db.session.add(demo_merchant)
             demo_promoter = Promoter(
@@ -1754,7 +2267,9 @@ def init_database():
                 base_commission_rate=0.15,
                 activity_score=90.0,
                 points=200,
-                level="فضي"
+                level="فضي",
+                monthly_sales=25,
+                tier="فضي"
             )
             db.session.add(demo_promoter)
             db.session.commit()
@@ -1767,7 +2282,19 @@ def init_database():
             )
             db.session.add(product)
             db.session.commit()
-            print("✅ تم إنشاء المستخدمين التجريبيين والمنتجات")
+            # إنشاء كوبون تجريبي
+            coupon = Coupon(
+                code="TEST-VIP-2024",
+                product_id=product.id,
+                promoter_id=demo_promoter.id,
+                discount_percentage=15,
+                is_percentage=True,
+                expires_at=datetime.utcnow() + timedelta(days=30),
+                max_uses=5
+            )
+            db.session.add(coupon)
+            db.session.commit()
+            print("✅ تم إنشاء المستخدمين التجريبيين والمنتجات والكوبونات")
         print("✅ قاعدة البيانات جاهزة وجميع الجداول موجودة")
 
 init_database()
@@ -1779,9 +2306,11 @@ if __name__ == '__main__':
 ╔══════════════════════════════════════════════════════════╗
 ║     🚀 ViralShield AI Engine - النسخة المتكاملة         ║
 ║     📍 Running on: http://0.0.0.0:{port}                 ║
-║     ✅ تم إصلاح مشكلة كود المروج نهائياً                  ║
-║     ✅ الروابط القصيرة تعمل عبر /r/<code>               ║
-║     ✅ صفحة المنتج تعمل عبر /product/<id>               ║
+║     ✅ تم إضافة الميزات الجديدة:                          ║
+║     🔹 المشاركة الاجتماعية (رقم 2)                      ║
+║     🔹 الكوبونات الديناميكية (رقم 3)                    ║
+║     🔹 العمولة المتدرجة (رقم 7)                         ║
+║     🔹 رحلة العميل (رقم 11)                             ║
 ║     © إعداد وتصميم م/ وسيم الحميدي                      ║
 ╚══════════════════════════════════════════════════════════╝
     """)
